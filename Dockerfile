@@ -13,4 +13,4 @@ RUN python tools/server.py
 
 EXPOSE 8080
 
-CMD ["python", "app/server.py", "serve"]
+CMD ["python", "tools/server.py", "serve"]

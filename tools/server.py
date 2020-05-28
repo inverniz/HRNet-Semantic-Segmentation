@@ -7,6 +7,7 @@ from io import BytesIO
 import base64
 
 import cv2
+from PIL import Image
 import argparse
 import os
 import pprint
@@ -40,33 +41,11 @@ def setup_model():
         module = eval('models.seg_hrnet_ocr')
         module.BatchNorm2d_class = module.BatchNorm2d = torch.nn.BatchNorm2d
     model = eval('models.seg_hrnet_ocr.get_seg_model')(config)
-
-    dump_input = torch.rand(
-        (1, 3, config.TEST.IMAGE_SIZE[1], config.TEST.IMAGE_SIZE[0])
-    )
-
-    if config.MODEL.PRETRAINED:
-        model_state_file = config.MODEL.PRETRAINED
-    else:
-        model_state_file = os.path.join(final_output_dir,
-                                        'best.pth')
-
-    pretrained_dict = torch.load(model_state_file, map_location='cpu')
-    model_dict = model.state_dict()
-    pretrained_dict = {k[6:]: v for k, v in pretrained_dict.items()
-                       if k[6:] in model_dict.keys()}
-    model_dict.update(pretrained_dict)
-    model.load_state_dict(model_dict)
-    model.eval()
     return model
 
 
 model = setup_model()
-classes = ['Blouse', 'Blazer', 'Button-Down', 'Bomber', 'Anorak', 'Tee', 'Tank', 'Top', 'Sweater', 'Flannel', 'Hoodie',
-           'Cardigan', 'Jacket', 'Henley', 'Poncho', 'Jersey', 'Turtleneck', 'Parka', 'Peacoat', 'Halter', 'Skirt',
-           'Shorts', 'Jeans', 'Joggers', 'Sweatpants', 'Jeggings', 'Cutoffs', 'Sweatshorts', 'Leggings', 'Culottes',
-           'Chinos', 'Trunks', 'Sarong', 'Gauchos', 'Jodhpurs', 'Capris', 'Dress', 'Romper', 'Coat', 'Kimono',
-           'Jumpsuit', 'Robe', 'Caftan', 'Kaftan', 'Coverup', 'Onesie']
+model.eval()
 
 path = Path(__file__).parent
 
@@ -80,26 +59,57 @@ PREDICTION_FILE_SRC = path / 'static' / 'predictions.txt'
 @app.route("/upload", methods=["POST"])
 async def upload(request):
     data = await request.form()
-    img_bytes = await (data["img"].read())
+    img_bytes = data["img"]
     bytes = base64.b64decode(img_bytes)
     return predict_from_bytes(bytes)
 
 
-def predict_from_bytes(bytes):
-    img = open_image(BytesIO(bytes))
-    downsample_rate = 1 / config.TEST.DOWNSAMPLERATE
-    frame = cv2.resize(
-        img,
-        None,
-        fx=downsample_rate,
-        fy=downsample_rate,
-        interpolation=cv2.INTER_NEAREST
-    )
-    size = frame.shape
+def get_palette(n):
+    palette = [0] * (n * 3)
+    for j in range(0, n):
+        lab = j
+        palette[j * 3 + 0] = 0
+        palette[j * 3 + 1] = 0
+        palette[j * 3 + 2] = 0
+        i = 0
+        while lab:
+            palette[j * 3 + 0] |= (((lab >> 0) & 1) << (7 - i))
+            palette[j * 3 + 1] |= (((lab >> 1) & 1) << (7 - i))
+            palette[j * 3 + 2] |= (((lab >> 2) & 1) << (7 - i))
+            i += 1
+            lab >>= 3
+    return palette
 
-    input_frame = frame.copy()
-    input_frame = input_frame.astype(np.float32)[:, :, ::-1]
-    input_frame = input_frame / 255.0
+
+def convert_label(label, inverse=False):
+    ignore_label = -1
+    label_mapping = {-1: ignore_label, 0: ignore_label,
+                     1: ignore_label, 2: ignore_label,
+                     3: ignore_label, 4: ignore_label,
+                     5: ignore_label, 6: ignore_label,
+                     7: 0, 8: 1, 9: ignore_label,
+                     10: ignore_label, 11: 2, 12: 3,
+                     13: 4, 14: ignore_label, 15: ignore_label,
+                     16: ignore_label, 17: 5, 18: ignore_label,
+                     19: 6, 20: 7, 21: 8, 22: 9, 23: 10, 24: 11,
+                     25: 12, 26: 13, 27: 14, 28: 15,
+                     29: ignore_label, 30: ignore_label,
+                     31: 16, 32: 17, 33: 18}
+    temp = label.copy()
+    if inverse:
+        for v, k in label_mapping.items():
+            label[temp == k] = v
+    else:
+        for k, v in label_mapping.items():
+            label[temp == k] = v
+    return label
+
+def input_transform(image):
+    size = image.shape
+    image = image.astype(np.float32)[:, :, ::-1]
+    image = image / 255.0
+    image -= [0.485, 0.456, 0.406]
+    image /= [0.229, 0.224, 0.225]
     long_size = np.int(size[0] + 0.5)
     h, w = size[:2]
     if h > w:
@@ -109,33 +119,50 @@ def predict_from_bytes(bytes):
         new_w = long_size
         new_h = np.int(h * long_size / w + 0.5)
 
-    input_frame = cv2.resize(input_frame, (new_w, new_h),
-                             interpolation=cv2.INTER_LINEAR)
+    image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    image = image.transpose((2, 0, 1))
+    return image
 
-    input_frame = input_frame.transpose((2, 0, 1))
+def predict_from_bytes(bytes):
+    frame = cv2.imdecode(np.frombuffer(bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    cv2.imwrite("tools/static/images/input.png", frame)
+    size = frame.shape
+    print("image shape: {}".format(size))
+
+    frame = input_transform(frame)
     with torch.no_grad():
-        logit = model(torch.as_tensor(np.expand_dims(input_frame, axis=0)))
+        logit = model(torch.as_tensor(np.expand_dims(frame, axis=0)))
 
+        OUTPUT_INDEX = -2
         if config.MODEL.NUM_OUTPUTS > 1:
-            logit = logit[config.TEST.OUTPUT_INDEX]
+            logit = logit[OUTPUT_INDEX]
 
-        # print("logit shape right after prediction: {}".format(logit.shape))
+        print("logit shape right after prediction: {}".format(logit.shape))
 
         logit = F.interpolate(
             input=logit, size=size[:2],
             mode='bilinear', align_corners=config.MODEL.ALIGN_CORNERS
         )
 
-        # print("logit shape after interpolation: {}".format(logit.shape))
+        print("logit shape after interpolation: {}".format(logit.shape))
 
         logit = logit.exp()
-        logit = logit[0].cpu()
+        logit = logit[0]
 
     prediction = np.asarray(np.argmax(logit, axis=0), dtype=np.uint8)
+    print("prediction shape: {}".format(prediction.shape))
+    print(np.unique(prediction))
+    palette = get_palette(256)
+    prediction = convert_label(prediction, inverse=True)
+    print(np.unique(prediction))
+    prediction = Image.fromarray(prediction)
+    prediction.putpalette(palette)
+    prediction.save("tools/static/images/prediction.png")
+
     result_html1 = path / 'static' / 'result1.html'
     result_html2 = path / 'static' / 'result2.html'
 
-    result_html = str(result_html1.open().read() + str(predictions[0:3]) + result_html2.open().read())
+    result_html = str(result_html1.open().read() + str("") + result_html2.open().read())
     return HTMLResponse(result_html)
 
 

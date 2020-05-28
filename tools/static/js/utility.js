@@ -15,15 +15,10 @@ function fileChange(e) {
         reader.onload = function(readerEvent) {
 
             var image = new Image();
-            image.onload = function(imageEvent) {	
-                var max_size = 420;
+            image.onload = function(imageEvent) {
                 var w = image.width;
                 var h = image.height;
-                // console.log("width:",w, "height:", h);
-                if (w > h) {
-                    if (w > max_size) { h*=max_size/w; w=max_size; }
-                } else     {  if (h > max_size) { w*=max_size/h; h=max_size; } }
-                // console.log("Updated width:",w, "Updated height:", h);
+                console.log("width:",w, "height:", h)
 
                 var canvas = document.createElement('canvas');
                 // // FORCEFUL to portrait mode only images

@@ -34,7 +34,7 @@ _C.CUDNN.ENABLED = True
 # common params for NETWORK
 _C.MODEL = CN()
 _C.MODEL.NAME = 'seg_hrnet_ocr'
-_C.MODEL.PRETRAINED = 'pretrained_models/hrnet_w48_cityscapes_cls19_1024x2048_ohem_trainvalset.pth'
+_C.MODEL.PRETRAINED = 'pretrained_models/hrnet_w48_cityscapes_cls19_1024x2048_trainset.pth'
 _C.MODEL.ALIGN_CORNERS = True
 _C.MODEL.NUM_OUTPUTS = 2
 
